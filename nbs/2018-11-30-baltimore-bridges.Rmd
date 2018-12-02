@@ -1,0 +1,250 @@
+---
+title: "Maryland Bridges"
+author: "Giedrius Blazys"
+date: "11/30/2018"
+description: 'A list of resources for working with databases and Rxx.'
+slug: baltimore-bridges
+categories:
+  - R
+  - TidyTuesday
+tags:
+  - '#rstats'
+  - '#tidytuesday'
+output:
+  html_document:
+    code_folding: hide
+    fig_height: 4
+    fig_width: 7
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(width = 120)
+```
+
+# {.tabset}
+
+## Description
+
+[youtube link](https://www.youtube.com/watch?v=kzM-4jMh9Qs)
+
+[#tidytuesday project repository](https://github.com/rfordatascience/tidytuesday)
+
+Lets first have a look at these files:
+
+## Load packages and data
+
+```{r load_libraries, message=FALSE, warning=FALSE}
+library("tidyverse")
+#library("ggthemes")
+library("scales")
+theme_set(theme_light())
+```
+
+
+```{r load_data, message=FALSE, warning=FALSE}
+data_file_link <- "https://github.com/rfordatascience/tidytuesday/raw/master/data/2018-11-27/baltimore_bridges.csv"
+maryland_bridges <- read_csv(data_file_link) %>% 
+    select(-vehicles) %>% 
+    mutate(inspection_yr = inspection_yr + 2000,
+           decade = 10 * (yr_built %/% 10)) %>% 
+    filter(yr_built >= 1900) %>% 
+    replace_na(list(responsibility = "Other")) %>% 
+    mutate(responsibility = fct_lump(responsibility, 4),
+           county = str_to_title(county))
+```
+
+## Analysis
+
+When briges were build?
+
+```{r}
+maryland_bridges  %>% 
+    count(decade, sort = TRUE) %>% 
+    ggplot(aes(decade, n))+geom_line() + 
+    expand_limits(y=0)+
+    labs(y = "# of bridges built this decade")
+```
+
+How bridge conditions depend on the year built?
+
+```{r}
+maryland_bridges  %>% 
+    group_by(decade) %>% 
+    summarise(pct_good = mean(bridge_condition == "Good"),
+              total = n()) %>% 
+    ggplot(aes(decade, pct_good))+geom_line() + 
+    geom_smooth(method = "lm")+
+    scale_y_continuous(labels = percent_format())+
+    expand_limits(y=0)+
+    labs(y = "% of bridges in good condition")
+```
+
+Most bridges build before 1970 not in good condition (though it does not matter when before 1970), but most of bridges build after 1980 are in good condition.
+
+```{r}
+maryland_bridges  %>% 
+    count(responsibility, sort = TRUE) %>% 
+    mutate(responsibility = fct_reorder(responsibility, n)) %>% 
+    ggplot(aes(responsibility, n)) + 
+    geom_col() + 
+    coord_flip()
+
+```
+
+```{r}
+maryland_bridges  %>% 
+    group_by(responsibility, decade) %>% 
+    summarise(pct_good = mean(bridge_condition == "Good"),
+              total = n()) %>% 
+    filter(responsibility != "Other") %>% 
+    ggplot(aes(decade, pct_good, color = responsibility))+geom_line() + 
+    scale_y_continuous(labels = percent_format())+
+    expand_limits(y=0)+
+    labs(y = "% of bridges in good condition")
+```
+
+The Country Highway Agency consistently has the most bridges rated as "Good" from before 1970. State Toll Authority is underperforming in bridges built in the 1990s.
+
+```{r}
+maryland_bridges  %>% 
+    ggplot(aes(avg_daily_traffic)) +
+    geom_histogram(bins = 30) +
+    scale_x_log10(labels = comma_format())
+```
+
+```{r}
+maryland_bridges  %>% 
+    filter(yr_built >= 1990) %>% 
+    group_by(traffic_category = cut(avg_daily_traffic, c(0,1000,10000,Inf),
+             labels = c("<1,000", "1,000-10,000", "10,000+"))) %>% 
+    summarise(pct_good = mean(bridge_condition == "Good"),
+              total = n())
+    
+```
+
+```{r}
+maryland_bridges  %>% 
+    ggplot(aes(long, lat, color = responsibility)) + 
+    borders("state", regions = "Maryland") +
+    geom_point() + 
+    coord_map() + 
+    theme_void()
+```
+
+What does the traffic look geographically
+
+```{r}
+maryland_bridges  %>% 
+    ggplot(aes(long, lat, color = avg_daily_traffic)) + 
+    borders("state", regions = "Maryland") +
+    geom_point() + 
+    scale_color_gradient2(low = "blue", high = "red", 
+                          midpoint = log10(median(maryland_bridges$avg_daily_traffic)),
+                          trans = "log10",
+                          labels = comma_format()) +
+    coord_map() + 
+    theme_void()
+```
+
+```{r}
+maryland_bridges  %>% 
+    ggplot(aes(long, lat, color = bridge_condition)) + 
+    borders("state", regions = "Maryland") +
+    geom_point(size = 1) + 
+    coord_map() + 
+    theme_void()
+```
+
+```{r}
+maryland_bridges  %>% 
+    ggplot(aes(long, lat, color = decade)) + 
+    borders("state", regions = "Maryland") +
+    geom_point(size = 1) + 
+    coord_map() + 
+    theme_void()
+```
+
+
+```{r}
+maryland_bridges  %>% 
+    ggplot(aes(long, lat, color = county)) + 
+    borders("state", regions = "Maryland") +
+    geom_point(size = 1) + 
+    coord_map() + 
+    theme_void()
+```
+
+### Effect of country, responsibility, traffic and time on bridge condition
+
+```{r}
+library(broom)
+library(splines)
+```
+
+Controlled for the overall trend in change over time, what's the effect of being in a particular responsibility
+
+```{r}
+model1 <- maryland_bridges %>% 
+    mutate(good = bridge_condition == "Good") %>% 
+    glm(good ~ ns(yr_built, 4) + responsibility, data = ., family = "binomial") 
+
+augment(model1, maryland_bridges, type.predict = "response") %>% 
+    ggplot(aes(yr_built, .fitted, color = responsibility)) + 
+    geom_line() +
+    expand_limits(y=0) +
+    scale_y_continuous(labels = percent_format()) +
+    labs(y = "Predicted probability a bridge is rated 'good'")
+```
+
+```{r}
+model1 %>% 
+    tidy(conf.int = TRUE) %>% 
+    filter(str_detect(term, "responsibility")) %>% 
+    mutate(term = reorder(term, estimate)) %>% 
+    ggplot(aes(estimate, term)) + 
+    geom_point() + 
+    geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+    geom_vline(color = "red", xintercept = 0, lty = 2)
+```
+
+Controlled for the overall trend in change over time, what's the effect of being in a particular country or responsibility
+
+```{r}
+model2 <- maryland_bridges %>% 
+    mutate(good = bridge_condition == "Good") %>% 
+    glm(good ~ ns(yr_built, 4) + responsibility + county, data = ., family = "binomial") 
+
+augment(model2, maryland_bridges, type.predict = "response") %>% 
+    ggplot(aes(yr_built, .fitted, color = responsibility)) + 
+    geom_line() +
+    facet_wrap(~ county) +
+    expand_limits(y=0) +
+    scale_y_continuous(labels = percent_format()) +
+    labs(y = "Predicted probability a bridge is rated 'good'")
+```
+
+```{r}
+model2 %>% 
+    tidy(conf.int = TRUE) %>% 
+    filter(str_detect(term, "responsibility|county")) %>% 
+    mutate(term = reorder(term, estimate)) %>% 
+    ggplot(aes(estimate, term)) + 
+    geom_point() + 
+    geom_errorbarh(aes(xmin = conf.low, xmax = conf.high)) +
+    geom_vline(color = "red", xintercept = 0, lty = 2)
+```
+
+```{r}
+model3 <- maryland_bridges %>% 
+    mutate(good = bridge_condition == "Good") %>% 
+    glm(good ~ ns(yr_built, 4) + responsibility + ns(avg_daily_traffic,3), data = ., family = "binomial") 
+
+model3 %>% summary()
+```
+
+```{r}
+model2 %>% summary()
+```
+
